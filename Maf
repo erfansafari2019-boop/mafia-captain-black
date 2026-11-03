@@ -1,0 +1,159 @@
+{
+  "name": "mafia-captain-black",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram Mafia Captain Black mini app starter",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "telegraf": "^4.16.3"
+  }
+}# MAFIA CAPTAIN BLACK
+
+Starter project for a Telegram bot + Mini App.
+
+## Deploy
+1. Upload these files to a GitHub repository.
+2. In Render choose **New + → Web Service** and connect the repository.
+3. Build command: `npm install`
+4. Start command: `npm start`
+5. In Render → Environment add:
+   - `BOT_TOKEN`: token from BotFather
+   - `APP_URL`: your public Render URL, e.g. `https://your-service.onrender.com`
+   - `RENDER_EXTERNAL_URL`: same public Render URL
+6. Redeploy after setting environment variables.
+
+## Bot use
+Add the bot to a Telegram group and run `/game`. Players use the join button.
+When 10 players join, the starter assigns roles and privately sends each role.
+
+## Important
+This is an initial playable foundation, not the complete final game engine. It currently includes lobby creation, 10-player capacity, random role assignment, private role delivery, and a basic Mini App landing page. Night actions, day voting, the gunner's simulated game mechanic, elimination rules, persistent storage, and admin controls still need implementation.
+require("dotenv").config();
+const express = require("express");
+const { Telegraf, Markup } = require("telegraf");
+
+const app = express();
+app.use(express.json());
+app.use(express.static("public"));
+
+const PORT = process.env.PORT || 3000;
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const APP_URL = process.env.APP_URL;
+
+let bot = null;
+const rooms = new Map();
+
+const ROLE_DECK = [
+  "پدرخوانده", "مافیا", "مافیا", "دکتر", "کارآگاه",
+  "تفنگدار", "شهروند", "شهروند", "شهروند", "شهروند"
+];
+
+function getRoom(chatId) {
+  if (!rooms.has(chatId)) rooms.set(chatId, { players: [], started: false, phase: "lobby" });
+  return rooms.get(chatId);
+}
+function shuffle(items) {
+  const a = [...items];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function playerName(ctx) {
+  const u = ctx.from || {};
+  return [u.first_name, u.last_name].filter(Boolean).join(" ") || `بازیکن ${u.id}`;
+}
+function lobbyText(room) {
+  const names = room.players.map((p, i) => `${i + 1}. ${p.name}`).join("\n") || "هنوز کسی وارد نشده.";
+  return `🖤 مافیا کاپیتان بلک\n\n👥 بازیکنان: ${room.players.length}/10\n\n${names}\n\n${room.started ? "بازی شروع شده است." : "برای ورود روی دکمه زیر بزنید."}`;
+}
+
+if (BOT_TOKEN) {
+  bot = new Telegraf(BOT_TOKEN);
+
+  bot.start(async (ctx) => {
+    const keyboard = APP_URL
+      ? Markup.inlineKeyboard([[Markup.button.webApp("🎮 ورود به مینی‌اپ", APP_URL)]])
+      : Markup.inlineKeyboard([[Markup.button.callback("ℹ️ راهنما", "help")]]);
+    await ctx.reply("🖤 به مافیا کاپیتان بلک خوش آمدی!\nبرای ساخت لابی، دستور /game را در گروه اجرا کن.", keyboard);
+  });
+
+  bot.command("game", async (ctx) => {
+    const room = getRoom(ctx.chat.id);
+    if (room.started) return ctx.reply("یک بازی در حال اجراست. پس از پایان بازی دوباره تلاش کنید.");
+    room.players = [];
+    await ctx.reply(lobbyText(room), Markup.inlineKeyboard([
+      [Markup.button.callback("➕ ورود به بازی", "join_game")],
+      [Markup.button.callback("🔄 تازه‌سازی", "refresh_lobby")]
+    ]));
+  });
+
+  bot.action("join_game", async (ctx) => {
+    const room = getRoom(ctx.chat.id);
+    if (room.started) return ctx.answerCbQuery("بازی شروع شده است.");
+    const id = ctx.from.id;
+    if (room.players.some(p => p.id === id)) return ctx.answerCbQuery("قبلاً وارد بازی شده‌ای.");
+    if (room.players.length >= 10) return ctx.answerCbQuery("ظرفیت تکمیل است.");
+    room.players.push({ id, name: playerName(ctx), role: null, alive: true });
+    await ctx.answerCbQuery("وارد لابی شدی!");
+    await ctx.editMessageText(lobbyText(room), Markup.inlineKeyboard([
+      [Markup.button.callback("➕ ورود به بازی", "join_game")],
+      [Markup.button.callback("🔄 تازه‌سازی", "refresh_lobby")]
+    ]));
+    if (room.players.length === 10) {
+      room.started = true;
+      room.phase = "night";
+      const roles = shuffle(ROLE_DECK);
+      room.players.forEach((p, i) => p.role = roles[i]);
+      for (const p of room.players) {
+        try {
+          await bot.telegram.sendMessage(p.id, `🎭 نقش تو: ${p.role}\n\n🖤 بازی مافیا کاپیتان بلک آغاز شد. برای ادامه، منتظر فرمان گرداننده بازی باش.`);
+        } catch (_) {}
+      }
+      await ctx.reply("🔔 ظرفیت ۱۰ نفر تکمیل شد؛ بازی آغاز شد و نقش‌ها به‌صورت خصوصی ارسال شدند.");
+    }
+  });
+
+  bot.action("refresh_lobby", async (ctx) => {
+    const room = getRoom(ctx.chat.id);
+    await ctx.answerCbQuery("به‌روزرسانی شد.");
+    await ctx.editMessageText(lobbyText(room), Markup.inlineKeyboard([
+      [Markup.button.callback("➕ ورود به بازی", "join_game")],
+      [Markup.button.callback("🔄 تازه‌سازی", "refresh_lobby")]
+    ]));
+  });
+
+  bot.action("help", ctx => ctx.answerCbQuery("در گروه دستور /game را اجرا کن.", { show_alert: true }));
+
+  app.post("/telegram-webhook", (req, res) => {
+    bot.handleUpdate(req.body, res);
+  });
+}
+
+app.get("/health", (_req, res) => res.json({ ok: true, service: "mafia-captain-black" }));
+app.get("/api/status", (_req, res) => res.json({
+  name: "MAFIA CAPTAIN BLACK",
+  capacity: 10,
+  botConfigured: Boolean(BOT_TOKEN),
+  miniAppConfigured: Boolean(APP_URL)
+}));
+
+app.get("/", (_req, res) => res.sendFile(require("path").join(__dirname, "public", "index.html")));
+
+app.listen(PORT, async () => {
+  console.log(`Server listening on ${PORT}`);
+  if (bot && process.env.RENDER_EXTERNAL_URL) {
+    try {
+      await bot.telegram.setWebhook(`${process.env.RENDER_EXTERNAL_URL}/telegram-webhook`);
+      console.log("Telegram webhook configured");
+    } catch (err) {
+      console.error("Webhook setup failed:", err.message);
+    }
+  }
+});
+
+if (!BOT_TOKEN) console.warn("BOT_TOKEN is missing. Add it in Render Environment.");
